@@ -683,44 +683,56 @@ export const EditMultilevelTaxonomy: StoryObj<typeof MetadataSidebarRedesign> = 
 
         await waitForLoadingToComplete(canvas);
 
-        const editButton = await waitFor(() => canvas.getByRole('button', { name: 'Edit My Taxonomy' }));
-
+        const editButton = await canvas.findByRole('button', { name: 'Edit My Taxonomy' });
         await userEvent.click(editButton);
 
-        const multilevelInput = canvas.getByRole('combobox');
-        const optionChip = canvas.getByRole('button', { name: 'London' });
-
+        const multilevelInput = await canvas.findByRole('combobox');
+        const optionChip = await canvas.findByRole('button', { name: 'London' });
         expect(multilevelInput).toBeInTheDocument();
         expect(optionChip).toBeInTheDocument();
 
         await userEvent.click(multilevelInput);
 
-        const listbox = await waitFor(() => canvas.getByRole('listbox'));
-        expect(listbox).toBeInTheDocument();
+        // Scope subsequent queries to the listbox to avoid race conditions with other UI
+        const listbox = await canvas.findByRole('listbox');
+        const listboxCanvas = within(listbox);
 
-        let expandButtons = await waitFor(() => canvas.getAllByRole('button', { name: 'Expand branch' }));
+        // Deterministically expand branches by label to avoid index-based flakiness.
+        // Tree nodes can lazy-load and reorder expander buttons across renders, so
+        // clicking expanders by index is unstable. We locate the branch by its label,
+        // click that branch's own expander, and then await a specific child label to
+        // appear rather than relying solely on aria-expanded (which can lag or be
+        // set on a different wrapper depending on render timing).
+        const expandBranch = async (label: string, expectedChildLabel: string) => {
+            const labelEl = await listboxCanvas.findByText(label);
+            const treeitem = labelEl.closest('[role="treeitem"]') as HTMLElement | null;
+            expect(treeitem).not.toBeNull();
+            const isExpanded = treeitem?.getAttribute('aria-expanded') === 'true';
+            if (!isExpanded) {
+                const expander = within(treeitem as HTMLElement).getByRole('button', { name: 'Expand branch' });
+                await userEvent.click(expander);
+            }
+            // Wait for a known child to render to confirm expansion completed
+            await listboxCanvas.findByText(expectedChildLabel);
+        };
 
-        await userEvent.click(expandButtons[1]);
+        await expandBranch('Japan', 'Hokkaido');
+        await expandBranch('Hokkaido', 'Sapporo');
 
-        const hokkaidoOption = await waitFor(() => canvas.getByText('Hokkaido'));
-        expect(hokkaidoOption).toBeInTheDocument();
+        // Re-scope to the active listbox before selecting the leaf.
+        // Expanding branches can trigger a tree re-render that unmounts the previous
+        // popup content. Re-querying the listbox here ensures we don't act on a stale
+        // element reference and avoids intermittent "element not in the document" errors.
+        const activeListbox = await canvas.findByRole('listbox');
+        const activeListboxCanvas = within(activeListbox);
+        await userEvent.click(await activeListboxCanvas.findByRole('treeitem', { name: 'Sapporo' }));
 
-        expandButtons = await waitFor(() => screen.getAllByRole('button', { name: 'Expand branch' }));
+        // Wait for the combobox to collapse after selection
+        await waitFor(() => expect(multilevelInput).toHaveAttribute('aria-expanded', 'false'));
 
-        await userEvent.click(expandButtons[2]);
-
-        const sapporoOption = await waitFor(() => canvas.getByRole('treeitem', { name: 'Sapporo' }));
-
-        expect(sapporoOption).toBeInTheDocument();
-        expect(sapporoOption).toHaveAttribute('aria-selected', 'false');
-
-        await userEvent.click(sapporoOption);
-
-        const sapporoSelection = await waitFor(() => canvas.getByRole('gridcell', { name: 'Sapporo' }));
-
-        expect(sapporoOption).toBeInTheDocument();
-        expect(sapporoOption).toHaveAttribute('aria-selected', 'true');
-        expect(sapporoSelection).toBeInTheDocument();
+        const chipsGrid = await canvas.findByRole('grid');
+        const sapporoChip = within(chipsGrid).getByRole('button', { name: 'Sapporo' });
+        expect(sapporoChip).toBeInTheDocument();
     },
 };
 
